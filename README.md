@@ -26,6 +26,8 @@ Internal microservice that exposes secure endpoints for Stripe payout data, inte
    - `TENANT_RATE_LIMIT_WINDOW_MS`: Rate limit window in milliseconds (per tenant).
    - `TENANT_RATE_LIMIT_MAX`: Max requests allowed per tenant within the window.
    - `ALLOW_UNATTRIBUTED_PAYOUTS`: When `true` (default), payouts without tenant metadata are returned to any authenticated tenant.
+   - `STRIPE_TIMEOUT_MS`: Maximum time (ms) to wait for Stripe responses (default `15000`).
+   - `STRIPE_MAX_NETWORK_RETRIES`: Automatic retry attempts for transient Stripe errors (default `2`).
    - `ALLOWED_ORIGINS`: Comma-delimited list of origins permitted via CORS.
 4. Start the service:
    ```bash
@@ -89,9 +91,12 @@ Requests missing these headers receive appropriate error responses (`401`, `403`
   ],
   "total_count": 1,
   "has_more": false,
-  "cached": false
+  "cached": false,
+  "stale": false
 }
 ```
+
+When Stripe is slow or unreachable, the service returns the last cached payload (with `"stale": true` and `"error": "stripe_timeout"`) or an empty result set, avoiding request timeouts.
 
 ### `GET /api/payouts/:id`
 

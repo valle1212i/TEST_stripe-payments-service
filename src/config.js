@@ -70,6 +70,8 @@ const config = {
   rateLimitMax: parseInteger(process.env.TENANT_RATE_LIMIT_MAX, 100),
   allowedOrigins: parseStringArray(process.env.ALLOWED_ORIGINS),
   allowUnattributedPayouts: parseBoolean(process.env.ALLOW_UNATTRIBUTED_PAYOUTS, true),
+  stripeTimeoutMs: parseInteger(process.env.STRIPE_TIMEOUT_MS, 15_000),
+  stripeMaxNetworkRetries: parseInteger(process.env.STRIPE_MAX_NETWORK_RETRIES, 2),
 };
 
 module.exports = config;

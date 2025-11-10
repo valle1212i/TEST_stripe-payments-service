@@ -115,10 +115,10 @@ app.get('/api/payouts', async (req, res, next) => {
   const refresh = req.query.refresh === 'true';
 
   const queryKey = buildCacheKey(tenantIdHeader, req.path, req.query);
-  const cached = refresh ? null : cache.get(queryKey);
+  const cachedPayload = refresh ? null : cache.get(queryKey);
 
-  if (cached) {
-    return res.json({ ...cached, cached: true });
+  if (cachedPayload) {
+    return res.json({ ...cachedPayload, cached: true });
   }
 
   try {
@@ -218,6 +218,39 @@ app.get('/api/payouts', async (req, res, next) => {
     cache.set(queryKey, payload, config.cacheTtlSeconds);
     return res.json(payload);
   } catch (error) {
+    const causeName = error?.cause?.name || '';
+    const code = error?.code || '';
+    const message = String(error?.message || '');
+    const normalizedMessage = message.toLowerCase();
+    const isTimeoutError =
+      code === 'ETIMEDOUT' ||
+      code === 'ECONNRESET' ||
+      code === 'FETCH_FAILED' ||
+      causeName === 'HeadersTimeoutError' ||
+      normalizedMessage.includes('headers timeout') ||
+      normalizedMessage.includes('fetch failed');
+
+    if (isTimeoutError && cachedPayload) {
+      return res.json({
+        ...cachedPayload,
+        cached: true,
+        stale: true,
+        error: 'stripe_timeout',
+      });
+    }
+
+    if (isTimeoutError) {
+      return res.json({
+        success: true,
+        data: [],
+        total_count: 0,
+        has_more: false,
+        cached: false,
+        stale: true,
+        error: 'stripe_timeout',
+      });
+    }
+
     return next(error);
   }
 });
