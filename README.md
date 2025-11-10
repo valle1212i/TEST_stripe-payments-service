@@ -25,6 +25,7 @@ Internal microservice that exposes secure endpoints for Stripe payout data, inte
    - `CACHE_TTL_SECONDS`: In-memory cache TTL for payout listings.
    - `TENANT_RATE_LIMIT_WINDOW_MS`: Rate limit window in milliseconds (per tenant).
    - `TENANT_RATE_LIMIT_MAX`: Max requests allowed per tenant within the window.
+   - `ALLOW_UNATTRIBUTED_PAYOUTS`: When `true` (default), payouts without tenant metadata are returned to any authenticated tenant.
    - `ALLOWED_ORIGINS`: Comma-delimited list of origins permitted via CORS.
 4. Start the service:
    ```bash
@@ -68,6 +69,7 @@ Requests missing these headers receive appropriate error responses (`401`, `403`
 - `status`, `type`
 - `tenantId` (overrides header for filtering)
 - `refresh` (`true` bypasses cache)
+- `ALLOW_UNATTRIBUTED_PAYOUTS` (env): determines whether payouts missing tenant metadata are included.
 
 **Response**
 

@@ -32,6 +32,23 @@ const parseInteger = (value, fallback) => {
   return parsed;
 };
 
+const parseBoolean = (value, fallback) => {
+  if (value === undefined || value === null || value === '') {
+    return fallback;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) {
+    return true;
+  }
+
+  if (['false', '0', 'no', 'n', 'off'].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
+};
+
 const parseStringArray = (value) => {
   if (!value) {
     return [];
@@ -52,6 +69,7 @@ const config = {
   rateLimitWindowMs: parseInteger(process.env.TENANT_RATE_LIMIT_WINDOW_MS, 60_000),
   rateLimitMax: parseInteger(process.env.TENANT_RATE_LIMIT_MAX, 100),
   allowedOrigins: parseStringArray(process.env.ALLOWED_ORIGINS),
+  allowUnattributedPayouts: parseBoolean(process.env.ALLOW_UNATTRIBUTED_PAYOUTS, true),
 };
 
 module.exports = config;

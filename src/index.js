@@ -19,6 +19,15 @@ const parseLimit = (value, fallback = 100) => {
   return Math.min(Math.max(parsed, 1), 100);
 };
 
+const normalizeTenant = (value) => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed ? trimmed.toLowerCase() : null;
+};
+
 const parseOffset = (value) => {
   const parsed = Number.parseInt(value, 10);
   if (Number.isNaN(parsed) || parsed < 0) {
@@ -102,6 +111,7 @@ app.get('/api/health', (req, res) => {
 app.get('/api/payouts', async (req, res, next) => {
   const tenantIdHeader = req.tenantId;
   const tenantFilter = req.query.tenantId || tenantIdHeader;
+  const normalizedTenantFilter = normalizeTenant(tenantFilter);
   const refresh = req.query.refresh === 'true';
 
   const queryKey = buildCacheKey(tenantIdHeader, req.path, req.query);
@@ -159,11 +169,16 @@ app.get('/api/payouts', async (req, res, next) => {
     }
 
     data = data.filter((payout) => {
-      if (tenantFilter) {
-        const tenantMatches =
-          payout.metadata?.tenantId === tenantFilter ||
-          payout.metadata?.tenant === tenantFilter;
-        if (!tenantMatches) {
+      if (normalizedTenantFilter) {
+        const metadataTenant =
+          normalizeTenant(payout.metadata?.tenantId) ||
+          normalizeTenant(payout.metadata?.tenant);
+
+        if (metadataTenant) {
+          if (metadataTenant !== normalizedTenantFilter) {
+            return false;
+          }
+        } else if (!config.allowUnattributedPayouts) {
           return false;
         }
       }
@@ -210,14 +225,21 @@ app.get('/api/payouts', async (req, res, next) => {
 app.get('/api/payouts/:id', async (req, res, next) => {
   const { id } = req.params;
   const tenantId = req.tenantId;
+  const normalizedTenantId = normalizeTenant(tenantId);
 
   try {
     const payout = await stripe.payouts.retrieve(id);
 
     const payoutTenant =
-      payout.metadata?.tenantId || payout.metadata?.tenant || null;
+      normalizeTenant(payout.metadata?.tenantId) ||
+      normalizeTenant(payout.metadata?.tenant) ||
+      null;
 
-    if (payoutTenant && payoutTenant !== tenantId) {
+    if (normalizedTenantId && payoutTenant) {
+      if (payoutTenant !== normalizedTenantId) {
+        return res.status(404).json({ error: 'Payout not found for tenant' });
+      }
+    } else if (normalizedTenantId && !config.allowUnattributedPayouts) {
       return res.status(404).json({ error: 'Payout not found for tenant' });
     }
 
@@ -234,13 +256,20 @@ app.get('/api/payouts/:id', async (req, res, next) => {
 app.get('/api/payouts/:id/transactions', async (req, res, next) => {
   const { id } = req.params;
   const tenantId = req.tenantId;
+  const normalizedTenantId = normalizeTenant(tenantId);
 
   try {
     const payout = await stripe.payouts.retrieve(id);
     const payoutTenant =
-      payout.metadata?.tenantId || payout.metadata?.tenant || null;
+      normalizeTenant(payout.metadata?.tenantId) ||
+      normalizeTenant(payout.metadata?.tenant) ||
+      null;
 
-    if (payoutTenant && payoutTenant !== tenantId) {
+    if (normalizedTenantId && payoutTenant) {
+      if (payoutTenant !== normalizedTenantId) {
+        return res.status(404).json({ error: 'Payout transactions not found' });
+      }
+    } else if (normalizedTenantId && !config.allowUnattributedPayouts) {
       return res.status(404).json({ error: 'Payout transactions not found' });
     }
 
