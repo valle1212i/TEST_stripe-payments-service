@@ -284,11 +284,14 @@ app.get('/api/payouts/:id/transactions', async (req, res, next) => {
       listParams.ending_before = req.query.ending_before;
     }
 
-    const transactions = await stripe.payouts.listTransactions(id, listParams);
+    const transactions = await stripe.balanceTransactions.list({
+      payout: id,
+      ...listParams,
+    });
 
     return res.json({
-      data: transactions.data,
-      has_more: transactions.has_more,
+      data: transactions.data || [],
+      has_more: transactions.has_more || false,
     });
   } catch (error) {
     if (error && error.statusCode === 404) {
