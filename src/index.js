@@ -19,6 +19,47 @@ const parseLimit = (value, fallback = 100) => {
   return Math.min(Math.max(parsed, 1), 100);
 };
 
+const parseOffset = (value) => {
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isNaN(parsed) || parsed < 0) {
+    return 0;
+  }
+
+  return parsed;
+};
+
+const toUnixTimestamp = (value) => {
+  if (!value) {
+    return undefined;
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return undefined;
+  }
+
+  return Math.floor(date.getTime() / 1000);
+};
+
+const buildCacheKey = (tenantId, path, params) =>
+  [tenantId, path, JSON.stringify(params || {})].join(':');
+
+const shapePayoutForResponse = (payout) => {
+  const transactionCount =
+    payout.metadata?.transaction_count ||
+    payout.metadata?.transactionCount ||
+    payout.metadata?.transactions ||
+    null;
+
+  return {
+    ...payout,
+    transaction_count:
+      transactionCount !== null && transactionCount !== undefined
+        ? Number.parseInt(transactionCount, 10) || 0
+        : 0,
+  };
+};
+
 app.use(helmet());
 app.use(express.json());
 app.use(
@@ -63,35 +104,103 @@ app.get('/api/payouts', async (req, res, next) => {
   const tenantFilter = req.query.tenantId || tenantIdHeader;
   const refresh = req.query.refresh === 'true';
 
-  const cacheKey = `payouts:${tenantIdHeader}:${tenantFilter || 'all'}`;
-  const cached = refresh ? null : cache.get(cacheKey);
+  const queryKey = buildCacheKey(tenantIdHeader, req.path, req.query);
+  const cached = refresh ? null : cache.get(queryKey);
 
   if (cached) {
     return res.json({ ...cached, cached: true });
   }
 
   try {
-    const payouts = await stripe.payouts.list({ limit: parseLimit(req.query.limit) });
+    const limit = parseLimit(req.query.limit);
+    const offset = parseOffset(req.query.offset);
+    const startingAfter = req.query.starting_after;
+    const endingBefore = req.query.ending_before;
+    const search = req.query.search?.toLowerCase();
+    const status = req.query.status;
+    const type = req.query.type;
+    const fromDate = toUnixTimestamp(req.query.from_date);
+    const toDate = toUnixTimestamp(req.query.to_date);
 
-    const filtered = payouts.data.filter((payout) => {
-      if (!tenantFilter) {
-        return true;
-      }
-
-      return (
-        (payout.metadata && payout.metadata.tenantId === tenantFilter) ||
-        payout.metadata?.tenant === tenantFilter
-      );
-    });
-
-    const payload = {
-      has_more: payouts.has_more,
-      data: filtered,
-      tenant: tenantIdHeader,
-      cached: false,
+    const listParams = {
+      limit: Math.min(
+        startingAfter || endingBefore ? limit : Math.min(limit + offset, 100),
+        100
+      ),
     };
 
-    cache.set(cacheKey, payload, config.cacheTtlSeconds);
+    if (startingAfter) {
+      listParams.starting_after = startingAfter;
+    }
+    if (endingBefore) {
+      listParams.ending_before = endingBefore;
+    }
+    if (status) {
+      listParams.status = status;
+    }
+
+    const created = {};
+    if (fromDate) {
+      created.gte = fromDate;
+    }
+    if (toDate) {
+      created.lte = toDate;
+    }
+    if (Object.keys(created).length > 0) {
+      listParams.created = created;
+    }
+
+    const payouts = await stripe.payouts.list(listParams);
+
+    let data = payouts.data;
+
+    if (!startingAfter && !endingBefore && offset > 0) {
+      data = data.slice(offset);
+    }
+
+    data = data.filter((payout) => {
+      if (tenantFilter) {
+        const tenantMatches =
+          payout.metadata?.tenantId === tenantFilter ||
+          payout.metadata?.tenant === tenantFilter;
+        if (!tenantMatches) {
+          return false;
+        }
+      }
+
+      if (type && payout.type !== type) {
+        return false;
+      }
+
+      if (search) {
+        const haystack = [
+          payout.id,
+          payout.description,
+          payout.metadata?.tenantId,
+          payout.metadata?.tenant,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+
+        if (!haystack.includes(search)) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+
+    const shaped = data.slice(0, limit).map(shapePayoutForResponse);
+
+    const payload = {
+      success: true,
+      data: shaped,
+      total_count: shaped.length,
+      has_more: payouts.has_more,
+    };
+
+    cache.set(queryKey, payload, config.cacheTtlSeconds);
     return res.json(payload);
   } catch (error) {
     return next(error);
@@ -112,7 +221,7 @@ app.get('/api/payouts/:id', async (req, res, next) => {
       return res.status(404).json({ error: 'Payout not found for tenant' });
     }
 
-    return res.json(payout);
+    return res.json({ payout });
   } catch (error) {
     if (error && error.statusCode === 404) {
       return res.status(404).json({ error: 'Payout not found' });
@@ -135,11 +244,23 @@ app.get('/api/payouts/:id/transactions', async (req, res, next) => {
       return res.status(404).json({ error: 'Payout transactions not found' });
     }
 
-    const transactions = await stripe.payouts.listTransactions(id, {
+    const listParams = {
       limit: parseLimit(req.query.limit),
-    });
+    };
 
-    return res.json(transactions);
+    if (req.query.starting_after) {
+      listParams.starting_after = req.query.starting_after;
+    }
+    if (req.query.ending_before) {
+      listParams.ending_before = req.query.ending_before;
+    }
+
+    const transactions = await stripe.payouts.listTransactions(id, listParams);
+
+    return res.json({
+      data: transactions.data,
+      has_more: transactions.has_more,
+    });
   } catch (error) {
     if (error && error.statusCode === 404) {
       return res.status(404).json({ error: 'Payout or transactions not found' });

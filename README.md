@@ -40,30 +40,72 @@ All endpoints under `/api` require:
 - `X-Internal-Auth`: Must match `PAYMENTS_SHARED_SECRET`.
 - `X-Tenant`: Unique tenant identifier. Used for authorization checks and rate limiting.
 
-Requests missing these headers receive appropriate error responses (`401`, `403`, or `400`).
+Requests missing these headers receive appropriate error responses (`401`, `403`, or `400`). Each response emits an `X-Request-Id` header to aid log correlation.
 
 ## API Reference
 
 | Method | Path                           | Description                                          |
 | ------ | ------------------------------ | ---------------------------------------------------- |
 | GET    | `/api/health`                  | Health check and diagnostics.                        |
-| GET    | `/api/payouts`                 | Lists payouts. Supports optional `tenantId` filter.  |
+| GET    | `/api/payouts`                 | Lists payouts (filters, cursors, caching supported). |
 | GET    | `/api/payouts/:id`             | Retrieves a single payout by Stripe payout ID.       |
 | GET    | `/api/payouts/:id/transactions`| Lists transactions associated with a payout.         |
 
-### Headers
+### `GET /api/payouts`
+
+**Headers**
 
 - `X-Internal-Auth`: Shared secret.
 - `X-Tenant`: Tenant identifier. Required for cache keying and rate limiting.
 
-### Query Parameters
+**Query Parameters**
 
-- `tenantId`: Optional. Filters payouts by metadata (`tenantId` or `tenant`).
-- `limit`: Optional (`1-100`, default `100`). Controls page size for Stripe listings.
+- `limit` (default `100`, max `100`)
+- `offset` (ignored when cursors are supplied)
+- `starting_after`, `ending_before`
+- `search`
+- `from_date`, `to_date`
+- `status`, `type`
+- `tenantId` (overrides header for filtering)
+- `refresh` (`true` bypasses cache)
 
-### Responses
+**Response**
 
-Successful responses return the underlying Stripe objects. Errors follow this shape:
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "po_123",
+      "amount": 1000,
+      "status": "paid",
+      "created": 1728798752,
+      "arrival_date": 1728885152,
+      "transaction_count": 14
+      // ...remaining Stripe payout fields
+    }
+  ],
+  "total_count": 1,
+  "has_more": false,
+  "cached": false
+}
+```
+
+### `GET /api/payouts/:id`
+
+```json
+{ "payout": { /* Stripe payout object */ } }
+```
+
+### `GET /api/payouts/:id/transactions`
+
+Query parameters: `limit`, `starting_after`, `ending_before`.
+
+```json
+{ "data": [ /* balance transactions */ ], "has_more": false }
+```
+
+### Error Shape
 
 ```json
 {
