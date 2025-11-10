@@ -1,0 +1,32 @@
+{
+  "name": "test_stripe-payments-service",
+  "version": "1.0.0",
+  "description": "Stripe payouts microservice for internal customer portal integrations.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "NODE_ENV=development node src/index.js",
+    "lint": "node --eval \"console.log('No linter configured')\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/valle1212i/TEST_stripe-payments-service.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/valle1212i/TEST_stripe-payments-service/issues"
+  },
+  "homepage": "https://github.com/valle1212i/TEST_stripe-payments-service#readme",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.2.1",
+    "helmet": "^8.1.0",
+    "stripe": "^19.3.0",
+    "uuid": "^13.0.0"
+  }
+}
