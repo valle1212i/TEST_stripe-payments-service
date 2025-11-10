@@ -138,6 +138,9 @@ app.get('/api/payouts', async (req, res, next) => {
   const cachedPayload = refresh ? null : cache.get(queryKey);
 
   if (cachedPayload) {
+    console.info(
+      `[${req.requestId}] Serving cached payouts for tenant ${tenantIdHeader}`
+    );
     return res.json({ ...cachedPayload, cached: true });
   }
 
@@ -179,6 +182,16 @@ app.get('/api/payouts', async (req, res, next) => {
     if (Object.keys(created).length > 0) {
       listParams.created = created;
     }
+
+    console.info(
+      `[${req.requestId}] Fetching payouts from Stripe for tenant ${tenantIdHeader}`,
+      {
+        limit,
+        offset,
+        startingAfter,
+        endingBefore,
+      }
+    );
 
     const payouts = await withStripeTimeout(stripe.payouts.list(listParams));
 
@@ -236,6 +249,9 @@ app.get('/api/payouts', async (req, res, next) => {
     };
 
     cache.set(queryKey, payload, config.cacheTtlSeconds);
+    console.info(
+      `[${req.requestId}] Cached payouts for tenant ${tenantIdHeader} (ttl=${config.cacheTtlSeconds}s)`
+    );
     return res.json(payload);
   } catch (error) {
     console.warn(
@@ -243,11 +259,14 @@ app.get('/api/payouts', async (req, res, next) => {
       {
         code: error?.code,
         message: error?.message,
-        cause: error?.cause?.name,
+        causeName: error?.cause?.name,
+        causeCode: error?.cause?.code,
+        cachedAvailable: Boolean(cachedPayload),
       }
     );
 
     const causeName = error?.cause?.name || '';
+    const causeCode = error?.cause?.code || '';
     const code = error?.code || '';
     const message = String(error?.message || '');
     const normalizedMessage = message.toLowerCase();
@@ -255,11 +274,16 @@ app.get('/api/payouts', async (req, res, next) => {
       code === 'ETIMEDOUT' ||
       code === 'ECONNRESET' ||
       code === 'FETCH_FAILED' ||
+      code === 'STRIPE_TIMEOUT' ||
+      causeCode === 'UND_ERR_HEADERS_TIMEOUT' ||
       causeName === 'HeadersTimeoutError' ||
       normalizedMessage.includes('headers timeout') ||
       normalizedMessage.includes('fetch failed');
 
     if (isTimeoutError && cachedPayload) {
+      console.info(
+        `[${req.requestId}] Returning stale cached payouts after Stripe timeout for tenant ${tenantIdHeader}`
+      );
       return res.json({
         ...cachedPayload,
         cached: true,
@@ -269,6 +293,9 @@ app.get('/api/payouts', async (req, res, next) => {
     }
 
     if (isTimeoutError) {
+      console.warn(
+        `[${req.requestId}] Returning empty payouts after Stripe timeout for tenant ${tenantIdHeader}`
+      );
       return res.json({
         success: true,
         data: [],
