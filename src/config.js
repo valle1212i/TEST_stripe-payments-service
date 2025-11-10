@@ -2,8 +2,18 @@ const dotenv = require('dotenv');
 
 dotenv.config();
 
-const requiredEnvVars = ['STRIPE_SECRET_KEY', 'PAYMENTS_SHARED_SECRET'];
-const missing = requiredEnvVars.filter((name) => !process.env[name]);
+const discoverSharedSecret = () =>
+  process.env.PAYMENTS_SHARED_SECRET || process.env.X_PAYMENTS_SECRET || null;
+
+const missing = [];
+if (!process.env.STRIPE_SECRET_KEY) {
+  missing.push('STRIPE_SECRET_KEY');
+}
+
+const sharedSecretValue = discoverSharedSecret();
+if (!sharedSecretValue) {
+  missing.push('PAYMENTS_SHARED_SECRET (or X_PAYMENTS_SECRET)');
+}
 
 if (missing.length > 0) {
   throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
@@ -37,7 +47,7 @@ const config = {
   env: process.env.NODE_ENV || 'development',
   port: parseInteger(process.env.PORT, 3000),
   stripeSecretKey: process.env.STRIPE_SECRET_KEY,
-  sharedSecret: process.env.PAYMENTS_SHARED_SECRET,
+  sharedSecret: sharedSecretValue,
   cacheTtlSeconds: parseInteger(process.env.CACHE_TTL_SECONDS, 60),
   rateLimitWindowMs: parseInteger(process.env.TENANT_RATE_LIMIT_WINDOW_MS, 60_000),
   rateLimitMax: parseInteger(process.env.TENANT_RATE_LIMIT_MAX, 100),

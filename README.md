@@ -20,7 +20,7 @@ Internal microservice that exposes secure endpoints for Stripe payout data, inte
    ```
 3. Populate `.env` with valid credentials:
    - `STRIPE_SECRET_KEY`: Stripe secret key with payouts scope.
-   - `PAYMENTS_SHARED_SECRET`: Shared secret used by upstream callers in the `X-Internal-Auth` header.
+   - `PAYMENTS_SHARED_SECRET` **or** `X_PAYMENTS_SECRET`: Shared secret used by upstream callers in the `X-Internal-Auth` header.
    - `PORT`: Port for the HTTP server (default `3000`).
    - `CACHE_TTL_SECONDS`: In-memory cache TTL for payout listings.
    - `TENANT_RATE_LIMIT_WINDOW_MS`: Rate limit window in milliseconds (per tenant).
@@ -37,7 +37,7 @@ The service listens on `http://localhost:<PORT>` and logs startup information to
 
 All endpoints under `/api` require:
 
-- `X-Internal-Auth`: Must match `PAYMENTS_SHARED_SECRET`.
+- `X-Internal-Auth`: Must match `PAYMENTS_SHARED_SECRET` (or legacy `X_PAYMENTS_SECRET`).
 - `X-Tenant`: Unique tenant identifier. Used for authorization checks and rate limiting.
 
 Requests missing these headers receive appropriate error responses (`401`, `403`, or `400`). Each response emits an `X-Request-Id` header to aid log correlation.
