@@ -37,6 +37,26 @@ const parseOffset = (value) => {
   return parsed;
 };
 
+const withStripeTimeout = (promise) => {
+  if (!config.stripeTimeoutMs || config.stripeTimeoutMs <= 0) {
+    return promise;
+  }
+
+  let timeoutId;
+  return Promise.race([
+    promise.finally(() => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    }),
+    new Promise((_, reject) => {
+      const timeoutError = new Error('Stripe request timed out');
+      timeoutError.code = 'STRIPE_TIMEOUT';
+      timeoutId = setTimeout(() => reject(timeoutError), config.stripeTimeoutMs);
+    }),
+  ]);
+};
+
 const toUnixTimestamp = (value) => {
   if (!value) {
     return undefined;
@@ -160,7 +180,7 @@ app.get('/api/payouts', async (req, res, next) => {
       listParams.created = created;
     }
 
-    const payouts = await stripe.payouts.list(listParams);
+    const payouts = await withStripeTimeout(stripe.payouts.list(listParams));
 
     let data = payouts.data;
 
@@ -218,6 +238,15 @@ app.get('/api/payouts', async (req, res, next) => {
     cache.set(queryKey, payload, config.cacheTtlSeconds);
     return res.json(payload);
   } catch (error) {
+    console.warn(
+      `[${req.requestId}] Failed to list payouts for tenant ${tenantIdHeader}`,
+      {
+        code: error?.code,
+        message: error?.message,
+        cause: error?.cause?.name,
+      }
+    );
+
     const causeName = error?.cause?.name || '';
     const code = error?.code || '';
     const message = String(error?.message || '');
@@ -261,7 +290,7 @@ app.get('/api/payouts/:id', async (req, res, next) => {
   const normalizedTenantId = normalizeTenant(tenantId);
 
   try {
-    const payout = await stripe.payouts.retrieve(id);
+    const payout = await withStripeTimeout(stripe.payouts.retrieve(id));
 
     const payoutTenant =
       normalizeTenant(payout.metadata?.tenantId) ||
@@ -292,7 +321,7 @@ app.get('/api/payouts/:id/transactions', async (req, res, next) => {
   const normalizedTenantId = normalizeTenant(tenantId);
 
   try {
-    const payout = await stripe.payouts.retrieve(id);
+    const payout = await withStripeTimeout(stripe.payouts.retrieve(id));
     const payoutTenant =
       normalizeTenant(payout.metadata?.tenantId) ||
       normalizeTenant(payout.metadata?.tenant) ||
@@ -317,10 +346,12 @@ app.get('/api/payouts/:id/transactions', async (req, res, next) => {
       listParams.ending_before = req.query.ending_before;
     }
 
-    const transactions = await stripe.balanceTransactions.list({
-      payout: id,
-      ...listParams,
-    });
+    const transactions = await withStripeTimeout(
+      stripe.balanceTransactions.list({
+        payout: id,
+        ...listParams,
+      })
+    );
 
     return res.json({
       data: transactions.data || [],
