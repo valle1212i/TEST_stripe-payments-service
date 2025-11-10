@@ -298,6 +298,16 @@ app.get('/api/payouts/:id/transactions', async (req, res, next) => {
       return res.status(404).json({ error: 'Payout or transactions not found' });
     }
 
+    const message = String(error?.message || '').toLowerCase();
+    const code = error?.code;
+    const isManualPayoutError =
+      code === 'balance_transactions_manual_filtering_not_allowed' ||
+      message.includes('only be filtered on automatic transfers');
+
+    if (isManualPayoutError) {
+      return res.json({ data: [], has_more: false });
+    }
+
     return next(error);
   }
 });
