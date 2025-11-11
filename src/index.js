@@ -42,19 +42,23 @@ const withStripeTimeout = (promise) => {
     return promise;
   }
 
-  let timeoutId;
-  return Promise.race([
-    promise.finally(() => {
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-      }
-    }),
-    new Promise((_, reject) => {
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
       const timeoutError = new Error('Stripe request timed out');
       timeoutError.code = 'STRIPE_TIMEOUT';
-      timeoutId = setTimeout(() => reject(timeoutError), config.stripeTimeoutMs);
-    }),
-  ]);
+      reject(timeoutError);
+    }, config.stripeTimeoutMs);
+
+    promise
+      .then((result) => {
+        clearTimeout(timeoutId);
+        resolve(result);
+      })
+      .catch((error) => {
+        clearTimeout(timeoutId);
+        reject(error);
+      });
+  });
 };
 
 const toUnixTimestamp = (value) => {
@@ -133,13 +137,16 @@ app.get('/api/payouts', async (req, res, next) => {
   const tenantFilter = req.query.tenantId || tenantIdHeader;
   const normalizedTenantFilter = normalizeTenant(tenantFilter);
   const refresh = req.query.refresh === 'true';
+  const startTime = process.hrtime.bigint();
+  const elapsedMs = () =>
+    Number((process.hrtime.bigint() - startTime) / BigInt(1e6));
 
   const queryKey = buildCacheKey(tenantIdHeader, req.path, req.query);
   const cachedPayload = refresh ? null : cache.get(queryKey);
 
   if (cachedPayload) {
     console.info(
-      `[${req.requestId}] Serving cached payouts for tenant ${tenantIdHeader}`
+      `[${req.requestId}] Serving cached payouts for tenant ${tenantIdHeader} (duration=${elapsedMs()}ms)`
     );
     return res.json({ ...cachedPayload, cached: true });
   }
@@ -250,12 +257,13 @@ app.get('/api/payouts', async (req, res, next) => {
 
     cache.set(queryKey, payload, config.cacheTtlSeconds);
     console.info(
-      `[${req.requestId}] Cached payouts for tenant ${tenantIdHeader} (ttl=${config.cacheTtlSeconds}s)`
+      `[${req.requestId}] Cached payouts for tenant ${tenantIdHeader} (ttl=${config.cacheTtlSeconds}s, duration=${elapsedMs()}ms, count=${shaped.length})`
     );
     return res.json(payload);
   } catch (error) {
+    const duration = elapsedMs();
     console.warn(
-      `[${req.requestId}] Failed to list payouts for tenant ${tenantIdHeader}`,
+      `[${req.requestId}] Failed to list payouts for tenant ${tenantIdHeader} (duration=${duration}ms)`,
       {
         code: error?.code,
         message: error?.message,
@@ -307,7 +315,33 @@ app.get('/api/payouts', async (req, res, next) => {
       });
     }
 
-    return next(error);
+    const fallbackPayload = cachedPayload
+      ? {
+          ...cachedPayload,
+          cached: true,
+          stale: true,
+          error: 'stripe_error',
+        }
+      : {
+          success: true,
+          data: [],
+          total_count: 0,
+          has_more: false,
+          cached: false,
+          stale: true,
+          error: 'stripe_error',
+        };
+
+    console.error(
+      `[${req.requestId}] Returning fallback payouts after Stripe error for tenant ${tenantIdHeader}`,
+      {
+        code,
+        causeName,
+        causeCode,
+      }
+    );
+
+    return res.json(fallbackPayload);
   }
 });
 
