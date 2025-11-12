@@ -394,9 +394,28 @@ app.get('/api/payouts/:id/transactions', async (req, res, next) => {
   const { id } = req.params;
   const tenantId = req.tenantId;
   const normalizedTenantId = normalizeTenant(tenantId);
+  const startTime = process.hrtime.bigint();
+  const elapsedMs = () =>
+    Number((process.hrtime.bigint() - startTime) / BigInt(1e6));
 
   try {
+    console.info(
+      `[${req.requestId}] Fetching transactions for payout ${id} (tenant=${tenantId})`
+    );
+
     const payout = await withStripeTimeout(stripe.payouts.retrieve(id));
+
+    console.info(`[${req.requestId}] Retrieved payout:`, {
+      id: payout.id,
+      type: payout.type,
+      amount: payout.amount,
+      currency: payout.currency,
+      status: payout.status,
+      arrival_date: payout.arrival_date,
+      created: payout.created,
+      automatic: payout.automatic,
+    });
+
     const payoutTenant =
       normalizeTenant(payout.metadata?.tenantId) ||
       normalizeTenant(payout.metadata?.tenant) ||
@@ -411,7 +430,7 @@ app.get('/api/payouts/:id/transactions', async (req, res, next) => {
     }
 
     const listParams = {
-      limit: parseLimit(req.query.limit),
+      limit: parseLimit(req.query.limit) || 100,
     };
 
     if (req.query.starting_after) {
@@ -421,18 +440,258 @@ app.get('/api/payouts/:id/transactions', async (req, res, next) => {
       listParams.ending_before = req.query.ending_before;
     }
 
-    const transactions = await withStripeTimeout(
-      stripe.balanceTransactions.list({
-        payout: id,
-        ...listParams,
-      })
+    // Fetch balance transactions for the payout
+    // For automatic payouts, we can filter directly by payout ID
+    // For manual payouts, Stripe doesn't allow filtering by payout ID
+    let transactions;
+    const isManualPayout = payout.type === 'manual' || !payout.automatic;
+
+    console.info(
+      `[${req.requestId}] Fetching balance transactions for payout ${id} (manual=${isManualPayout}, automatic=${payout.automatic})`
     );
+
+    try {
+      if (isManualPayout) {
+        // Manual payouts: fetch by date range and filter
+        console.info(
+          `[${req.requestId}] Manual payout detected - fetching transactions by date range`
+        );
+
+        const payoutDate = payout.created;
+        const dayInSeconds = 86400;
+        // Use a wider date range for manual payouts
+        const dateRange = {
+          created: {
+            gte: payoutDate - dayInSeconds * 30, // 30 days before
+            lte: payoutDate + dayInSeconds * 1, // 1 day after
+          },
+        };
+
+        const allTransactions = await withStripeTimeout(
+          stripe.balanceTransactions.list({
+            ...dateRange,
+            limit: 100, // Fetch more to find matches
+          })
+        );
+
+        // Filter to transactions that reference this payout
+        if (allTransactions.data) {
+          const filtered = allTransactions.data.filter((tx) => {
+            // Match transactions that are linked to this payout
+            return tx.payout === id;
+          });
+
+          transactions = {
+            data: filtered,
+            has_more: false,
+          };
+
+          console.info(
+            `[${req.requestId}] Manual payout: found ${filtered.length} transactions via date range filtering (searched ${allTransactions.data.length} transactions)`
+          );
+        } else {
+          transactions = { data: [], has_more: false };
+        }
+      } else {
+        // Automatic payouts: filter directly by payout ID
+        console.info(
+          `[${req.requestId}] Automatic payout - fetching transactions with payout filter`
+        );
+
+        transactions = await withStripeTimeout(
+          stripe.balanceTransactions.list({
+            payout: id,
+            ...listParams,
+          })
+        );
+
+        console.info(
+          `[${req.requestId}] Automatic payout: fetched ${transactions.data?.length || 0} transactions directly`
+        );
+
+        // If no transactions found, try alternative approach:
+        // Fetch all balance transactions and filter by payout ID in response
+        if (!transactions.data || transactions.data.length === 0) {
+          console.warn(
+            `[${req.requestId}] No transactions found with payout filter for automatic payout, trying alternative method`
+          );
+
+          // Try fetching transactions that were created around the payout date
+          // and check if they reference this payout
+          if (payout.created) {
+            const dayInSeconds = 86400;
+            const dateRange = {
+              created: {
+                gte: payout.created - dayInSeconds * 7,
+                lte: payout.created + dayInSeconds * 7,
+              },
+            };
+
+            try {
+              const fallbackTransactions = await withStripeTimeout(
+                stripe.balanceTransactions.list({
+                  ...dateRange,
+                  limit: 100,
+                })
+              );
+
+              if (fallbackTransactions.data) {
+                // Filter to transactions that reference this payout
+                const filtered = fallbackTransactions.data.filter(
+                  (tx) => tx.payout === id
+                );
+
+                if (filtered.length > 0) {
+                  transactions.data = filtered;
+                  transactions.has_more = false;
+                  console.info(
+                    `[${req.requestId}] Found ${filtered.length} transactions via date range fallback`
+                  );
+                } else {
+                  console.warn(
+                    `[${req.requestId}] No transactions found in date range that reference payout ${id}`
+                  );
+                  // Log sample transaction IDs to help debug
+                  if (fallbackTransactions.data.length > 0) {
+                    console.info(
+                      `[${req.requestId}] Sample transaction payout IDs:`,
+                      fallbackTransactions.data
+                        .slice(0, 5)
+                        .map((tx) => ({
+                          id: tx.id,
+                          type: tx.type,
+                          payout: tx.payout,
+                          created: tx.created,
+                        }))
+                    );
+                  }
+                }
+              }
+            } catch (fallbackError) {
+              console.warn(
+                `[${req.requestId}] Fallback fetch failed:`,
+                fallbackError.message
+              );
+            }
+          }
+        }
+      }
+    } catch (error) {
+      const message = String(error?.message || '').toLowerCase();
+      const code = error?.code;
+
+      const isManualPayoutError =
+        code === 'balance_transactions_manual_filtering_not_allowed' ||
+        message.includes('only be filtered on automatic transfers') ||
+        message.includes('cannot filter balance transaction history');
+
+      if (isManualPayoutError && !isManualPayout) {
+        // Treated as manual payout even though it's marked as automatic
+        console.warn(
+          `[${req.requestId}] Payout ${id} treated as manual due to API error, trying date range method`
+        );
+
+        try {
+          const payoutDate = payout.created;
+          const dayInSeconds = 86400;
+          const dateRange = {
+            created: {
+              gte: payoutDate - dayInSeconds * 30,
+              lte: payoutDate + dayInSeconds * 1,
+            },
+          };
+
+          const allTransactions = await withStripeTimeout(
+            stripe.balanceTransactions.list({
+              ...dateRange,
+              limit: 100,
+            })
+          );
+
+          if (allTransactions.data) {
+            const filtered = allTransactions.data.filter(
+              (tx) => tx.payout === id
+            );
+            transactions = {
+              data: filtered,
+              has_more: false,
+            };
+            console.info(
+              `[${req.requestId}] Found ${filtered.length} transactions via date range after API error`
+            );
+          } else {
+            transactions = { data: [], has_more: false };
+          }
+        } catch (fallbackError) {
+          console.error(
+            `[${req.requestId}] Fallback after manual payout error failed:`,
+            fallbackError.message
+          );
+          transactions = { data: [], has_more: false };
+        }
+      } else if (isManualPayoutError) {
+        console.info(
+          `[${req.requestId}] Manual payout confirmed via API error, returning empty result`
+        );
+        return res.json({ data: [], has_more: false });
+      } else {
+        throw error;
+      }
+    }
+
+    // Ensure transactions is initialized
+    if (!transactions) {
+      console.warn(
+        `[${req.requestId}] Transactions not initialized for payout ${id}, returning empty result`
+      );
+      transactions = { data: [], has_more: false };
+    }
+
+    console.info(
+      `[${req.requestId}] Returning ${transactions.data?.length || 0} transactions for payout ${id} (duration=${elapsedMs()}ms)`
+    );
+
+    // Log transaction details for debugging
+    if (transactions.data && transactions.data.length > 0) {
+      console.info(
+        `[${req.requestId}] Transaction types for payout ${id}:`,
+        transactions.data.map((tx) => ({
+          id: tx.id,
+          type: tx.type,
+          amount: tx.amount,
+          net: tx.net,
+        }))
+      );
+    } else {
+      console.warn(
+        `[${req.requestId}] No transactions found for payout ${id}. Payout details:`,
+        {
+          id: payout.id,
+          type: payout.type,
+          automatic: payout.automatic,
+          amount: payout.amount,
+          status: payout.status,
+          created: payout.created,
+        }
+      );
+    }
 
     return res.json({
       data: transactions.data || [],
       has_more: transactions.has_more || false,
     });
   } catch (error) {
+    console.error(
+      `[${req.requestId}] Error fetching transactions for payout ${id}:`,
+      {
+        code: error?.code,
+        message: error?.message,
+        statusCode: error?.statusCode,
+        type: error?.type,
+        duration: elapsedMs(),
+      }
+    );
+
     if (error && error.statusCode === 404) {
       return res.status(404).json({ error: 'Payout or transactions not found' });
     }
@@ -444,6 +703,9 @@ app.get('/api/payouts/:id/transactions', async (req, res, next) => {
       message.includes('only be filtered on automatic transfers');
 
     if (isManualPayoutError) {
+      console.info(
+        `[${req.requestId}] Manual payout detected via error, returning empty result`
+      );
       return res.json({ data: [], has_more: false });
     }
 
