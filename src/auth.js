@@ -6,6 +6,11 @@ const headerNames = {
 };
 
 const requireInternalHeaders = (req, res, next) => {
+  // Skip auth for health check
+  if (req.path === '/api/health' || req.path === '/health') {
+    return next();
+  }
+
   const providedSecret = req.headers[headerNames.auth];
   const tenantId = req.headers[headerNames.tenant];
 

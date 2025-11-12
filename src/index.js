@@ -118,6 +118,24 @@ app.use((req, res, next) => {
   next();
 });
 
+// Public health check (before auth)
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Root route for browser access
+app.get('/', (req, res) => {
+  res.json({
+    service: 'Stripe Payments Service',
+    status: 'running',
+    version: '1.0.0',
+    endpoints: {
+      health: '/api/health',
+      payouts: '/api/payouts (requires auth)',
+    },
+  });
+});
+
 const tenantRateLimiter = rateLimit({
   windowMs: config.rateLimitWindowMs,
   max: config.rateLimitMax,
@@ -127,10 +145,6 @@ const tenantRateLimiter = rateLimit({
 });
 
 app.use('/api', requireInternalHeaders, tenantRateLimiter);
-
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
 
 app.get('/api/payouts', async (req, res, next) => {
   const tenantIdHeader = req.tenantId;
@@ -447,7 +461,29 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(config.port, () => {
+// Handle uncaught errors and rejections
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  process.exit(1);
+});
+
+const server = app.listen(config.port, () => {
   console.log(`Stripe payments service listening on port ${config.port}`);
+  console.log(`Environment: ${config.env}`);
+  console.log(`Health check: http://localhost:${config.port}/api/health`);
+});
+
+server.on('error', (error) => {
+  if (error.code === 'EADDRINUSE') {
+    console.error(`Port ${config.port} is already in use`);
+  } else {
+    console.error('Server error:', error);
+  }
+  process.exit(1);
 });
 
